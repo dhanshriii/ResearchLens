@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Model caches
+.cache/
+huggingface_cache/
+models/
+
+# Temporary files and generated data
+*.log
+*.tmp
+.DS_Store
