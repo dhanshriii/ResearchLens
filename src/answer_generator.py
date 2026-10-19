@@ -5,6 +5,7 @@ Uses the existing BM25 + cross-encoder retriever.
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -85,7 +86,7 @@ def call_gemini(prompt):
         ],
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 2000,
+            "maxOutputTokens": 4000,
         },
     }
 
@@ -99,16 +100,46 @@ def call_gemini(prompt):
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        details = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"Gemini API returned HTTP {exc.code}: {details}"
-        ) from None
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Could not reach Gemini API: {exc.reason}") from None
+    max_attempts = 4
+
+    for attempt in range(max_attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            break
+
+        except urllib.error.HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="replace")
+
+            # Retry temporary rate-limit and service-availability errors.
+            if exc.code in (429, 500, 502, 503, 504):
+                if attempt < max_attempts - 1:
+                    delay = 2 ** (attempt + 1)
+                    print(
+                        f"Gemini returned HTTP {exc.code}. "
+                        f"Retrying in {delay} seconds "
+                        f"(attempt {attempt + 2}/{max_attempts})."
+                    )
+                    time.sleep(delay)
+                    continue
+
+            raise RuntimeError(
+                f"Gemini API returned HTTP {exc.code}: {details}"
+            ) from None
+
+        except urllib.error.URLError as exc:
+            if attempt < max_attempts - 1:
+                delay = 2 ** (attempt + 1)
+                print(
+                    f"Gemini connection failed. Retrying in {delay} "
+                    f"seconds (attempt {attempt + 2}/{max_attempts})."
+                )
+                time.sleep(delay)
+                continue
+
+            raise RuntimeError(
+                f"Could not reach Gemini API: {exc.reason}"
+            ) from None
 
     candidates = result.get("candidates", [])
     if not candidates:
@@ -117,7 +148,17 @@ def call_gemini(prompt):
             f"Gemini returned no answer. Feedback: {feedback or result}"
         )
 
-    parts = candidates[0].get("content", {}).get("parts", [])
+    candidate = candidates[0]
+    finish_reason = candidate.get("finishReason", "UNKNOWN")
+
+    if finish_reason != "STOP":
+        raise RuntimeError(
+            "Gemini response was not completed normally. "
+            f"finishReason={finish_reason}. "
+            "The response was not accepted as a complete answer."
+        )
+
+    parts = candidate.get("content", {}).get("parts", [])
     answer = "\n".join(
         part["text"] for part in parts if isinstance(part.get("text"), str)
     ).strip()
@@ -150,6 +191,7 @@ def answer_question(retriever, question):
             "page": passage.get("page", "Unknown"),
             "chunk_id": passage.get("chunk_id", "Unknown"),
             "reranker_score": passage.get("reranker_score"),
+            "text": passage.get("text", ""),
         }
         for passage in passages
     ]

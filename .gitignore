@@ -23,3 +23,14 @@ models/
 *.log
 *.tmp
 .DS_Store
+
+# Local patch backups
+*.before_*
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local vector databases and runtime data
+chroma_db/

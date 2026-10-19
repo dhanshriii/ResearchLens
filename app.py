@@ -10,10 +10,11 @@ ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
-from retriever import ResearchPaperRetriever
+from hybrid_retriever import HybridRetriever
 from answer_generator import answer_question
 from extract_pdf import pymupdf
 from chunk_text import chunk_page_text
+from summarizer import summarize_document
 
 
 st.set_page_config(
@@ -27,7 +28,7 @@ st.caption("An evidence-grounded assistant for multiple research documents.")
 
 with st.sidebar:
     st.header("Research workspace")
-    st.markdown("**Retrieval:** BM25 + Cross-Encoder")
+    st.markdown("**Retrieval:** BM25 + ChromaDB + RRF + Cross-Encoder")
     st.markdown("**Answer generation:** Gemini")
     st.info(
         "Upload multiple PDFs to ask questions across your documents. "
@@ -85,20 +86,29 @@ def process_uploaded_pdf(pdf_bytes: bytes, filename: str):
     return chunks, len(pages)
 
 
-@st.cache_resource(show_spinner="Building the combined retrieval system...")
+@st.cache_resource(show_spinner="Building the combined hybrid retrieval system...")
 def load_retriever(chunks_json: str, document_id: str):
-    """Build one retriever over all selected documents."""
+    """Build an isolated hybrid retriever for the selected documents."""
     cache_dir = Path("/tmp/researchlens_uploads")
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     chunks_path = cache_dir / f"{document_id}_chunks.json"
     chunks_path.write_text(chunks_json, encoding="utf-8")
 
-    return ResearchPaperRetriever(
+    # Keep each document collection isolated in ChromaDB.
+    vector_db_path = cache_dir / "chroma_db"
+    collection_name = f"rl_{document_id[:32]}"
+
+    return HybridRetriever(
         chunks_path=chunks_path,
+        vector_db_path=vector_db_path,
         candidate_k=50,
         final_k=5,
+        bm25_k=50,
+        vector_k=50,
+        rrf_k=60,
         device="cpu",
+        collection_name=collection_name,
     )
 
 
@@ -174,11 +184,57 @@ with st.expander("View selected documents", expanded=True):
             f"{doc['pages']} pages with text, {doc['chunks']} chunks"
         )
 
-# Clear chat history when the selected document collection changes.
+
+# Summarize the currently selected collection of uploaded documents.
 if st.session_state.get("active_document_id") != document_id:
     st.session_state.active_document_id = document_id
     st.session_state.messages = []
+    st.session_state.pop("document_summary", None)
+    st.session_state.pop("summary_document_id", None)
 
+st.subheader("Document Summary")
+
+if st.button(
+    "Summarize Documents",
+    key="summarize_documents",
+    help="Generate a summary of all currently selected PDFs.",
+):
+    try:
+        with st.spinner(
+            "Summarizing documents. Completed checkpoints will be reused..."
+        ):
+            summary_result = summarize_document(all_chunks)
+
+        st.session_state.document_summary = summary_result
+        st.session_state.summary_document_id = document_id
+
+    except Exception as exc:
+        st.error(f"Unable to summarize the documents: {exc}")
+
+if (
+    st.session_state.get("summary_document_id") == document_id
+    and st.session_state.get("document_summary")
+):
+    summary_result = st.session_state.document_summary
+
+    st.markdown(summary_result["summary"])
+
+    with st.expander("Summary details and source pages"):
+        st.write(f"Chunks processed: {summary_result['chunks_processed']}")
+        st.write(f"Groups processed: {summary_result['groups_processed']}")
+        st.write(
+            "Source-page references: "
+            f"{len(summary_result['sources'])}"
+        )
+
+        for source in summary_result["sources"]:
+            st.markdown(
+                f"- **{source['source']}** — page {source['page']}"
+            )
+
+st.divider()
+
+# Render the existing question-answering conversation.\n
 for message in st.session_state.get("messages", []):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -191,6 +247,12 @@ for message in st.session_state.get("messages", []):
                         f"{source['source']}, page {source['page']}"
                     )
                     st.caption(f"Chunk: {source['chunk_id']}")
+                    with st.expander("Read retrieved passage"):
+                        passage_text = source.get("text", "").strip()
+                        if passage_text:
+                            st.text(passage_text)
+                        else:
+                            st.caption("Passage text is unavailable.")
 
 question = st.chat_input(
     "Ask a question across your uploaded documents..."
@@ -223,6 +285,12 @@ if question:
                             f"{source['source']}, page {source['page']}"
                         )
                         st.caption(f"Chunk: {source['chunk_id']}")
+                    with st.expander("Read retrieved passage"):
+                        passage_text = source.get("text", "").strip()
+                        if passage_text:
+                            st.text(passage_text)
+                        else:
+                            st.caption("Passage text is unavailable.")
 
             st.session_state.messages.append({
                 "role": "assistant",
