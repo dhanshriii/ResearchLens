@@ -4,6 +4,7 @@ ResearchLens: Hierarchical document summarization with checkpoints.
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,38 @@ def _format_group(group: list[dict[str, Any]]) -> str:
         sections.append(f"[Source: {source}, page {page}]\n{text}")
 
     return "\n\n".join(sections)
+
+
+def clean_summary_formatting(text: str) -> str:
+    """Normalize common duplicated numbers and malformed math notation."""
+    if not isinstance(text, str):
+        return ""
+
+    # Repair common duplicated convolution-kernel dimensions.
+    text = re.sub(r"1\s*[×x]\s*11\s*[×x]\s*1", "1×1", text)
+    text = re.sub(r"3\s*[×x]\s*33\s*[×x]\s*3", "3×3", text)
+
+    # Repair duplicated mathematical expressions.
+    text = re.sub(r"O\(W2H2\)O\(W2H2\)", "O(W²H²)", text)
+    text = re.sub(r"O\(W\^2H\^2\)", "O(W²H²)", text)
+
+    # Repair repeated numeric values followed by common units.
+    units = r"(?:dB|SSIM|FLOPs|iterations|parameters|%)"
+    text = re.sub(
+        rf"(\b\d+(?:\.\d+)?\s*{units})\s*\1\b",
+        r"\1",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Repair repeated dimensions, batch sizes, and training counts.
+    text = re.sub(r"\b(128×128)\s*\1\b", r"\1", text)
+    text = re.sub(r"\b(384×384)\s*\1\b", r"\1", text)
+    text = re.sub(r"\b(300K)\s*\1\b", r"\1", text)
+    text = re.sub(r"\b(64)\s*\1\b", r"\1", text)
+    text = re.sub(r"\b(8)\s*\1\b", r"\1", text)
+
+    return text
 
 
 def _looks_complete(text: str) -> bool:
@@ -229,7 +262,7 @@ Write a structured intermediate summary.
                 saved_final.get("fingerprint") == fingerprint
                 and _looks_complete(saved_final.get("summary", ""))
             ):
-                final_summary = saved_final["summary"]
+                final_summary = clean_summary_formatting(saved_final["summary"])
                 print("Reusing saved final document summary.")
             else:
                 final_summary = ""
@@ -274,7 +307,7 @@ Write the final summary now.
 """
 
             try:
-                candidate_summary = call_gemini(final_prompt)
+                candidate_summary = clean_summary_formatting(call_gemini(final_prompt))
 
                 if _looks_complete(candidate_summary):
                     final_summary = candidate_summary
@@ -312,6 +345,8 @@ Write the final summary now.
                 "sources": source_records,
             },
         )
+
+    final_summary = clean_summary_formatting(final_summary)
 
     return {
         "summary": final_summary,

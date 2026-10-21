@@ -14,7 +14,7 @@ from hybrid_retriever import HybridRetriever
 from answer_generator import answer_question
 from extract_pdf import pymupdf
 from chunk_text import chunk_page_text
-from summarizer import summarize_document
+from summarizer import clean_summary_formatting, summarize_document
 
 
 st.set_page_config(
@@ -217,7 +217,7 @@ if (
 ):
     summary_result = st.session_state.document_summary
 
-    st.markdown(summary_result["summary"])
+    st.markdown(clean_summary_formatting(summary_result["summary"]))
 
     with st.expander("Summary details and source pages"):
         st.write(f"Chunks processed: {summary_result['chunks_processed']}")
